@@ -1,0 +1,5 @@
+build/
+Debug/
+Release/
+ExtIO_FobosSDR/Debug/
+ExtIO_FobosSDR/Release/
