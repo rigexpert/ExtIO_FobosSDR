@@ -19,6 +19,13 @@ Full source code.
 - copy fobos.dll and ExtIO_FobosSDR.dll to your application directory
 - run your application
 
+## Supported software
+
+- **HDSDR** https://www.hdsdr.de/
+- **uSDR** https://sourceforge.net/projects/u-sdr/
+- **SDR#** (used to be)
+
+
 ## What is actually Fobos SDR
 
 For more info see the main product page
