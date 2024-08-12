@@ -37,10 +37,6 @@ typedef struct sr
 
 static sr_t gSampleRates[] = 
 {
-    {  4000000.0, L"4 MHz" },
-    {  5000000.0, L"5 MHz" },
-	{  6250000.0, L"6.25 MHz" },
-	{  6400000.0, L"6.4MHz" },
 	{  8000000.0, L"8 MHz" },
     { 10000000.0, L"10 MHz" },
 	{ 12500000.0, L"12.5 MHz" },
@@ -68,10 +64,14 @@ static char gBoardInfo[64];
 
 static HANDLE ghWorker = INVALID_HANDLE_VALUE;
 
-#define USER_GPO_1		1  // 2^0, bit 0
-#define USER_GPO_2		2  // 2^1, bit 1
-#define USER_GPO_3		4  // 2^2, bit 2
-#define USER_GPO_4		8  // 2^3, bit 3
+#define USER_GPO0		1
+#define USER_GPO1		2
+#define USER_GPO2		4
+#define USER_GPO3		8
+#define USER_GPO4		8
+#define USER_GPO5		8
+#define USER_GPO6		8
+#define USER_GPO7		8
 
 static int64_t 	gdLOfreq = 100000000;
 static int		giSrateIdx = 9; // 
@@ -99,6 +99,24 @@ void RxCallBack(float* buf, uint32_t len, void* ctx)
             int count = len / 4;
             for (int i = 0; i < count; i++)
             {
+                // re
+                buf[i * 8 + 1] = 0.0f;             // im = 0
+
+                buf[i * 8 + 2] = -buf[i * 8 + 2];  // re = -re
+                buf[i * 8 + 3] = 0.0f;             // im = 0
+
+                                                   // re
+                buf[i * 8 + 5] = 0.0f;             // im = 0
+
+                buf[i * 8 + 6] = -buf[i * 8 + 6];  // re = -re
+                buf[i * 8 + 7] = 0.0f;             // im = 0
+            }
+        }
+        if (giSamplingMode == 3)
+        {
+            int count = len / 4;
+            for (int i = 0; i < count; i++)
+            {
                 buf[i * 8 + 0] = buf[i * 8 + 1];   // re = im
                 buf[i * 8 + 1] = 0.0f;             // im = 0
 
@@ -109,24 +127,6 @@ void RxCallBack(float* buf, uint32_t len, void* ctx)
                 buf[i * 8 + 5] = 0.0f;             // im = 0
 
                 buf[i * 8 + 6] = - buf[i * 8 + 7]; // re = -im
-                buf[i * 8 + 7] = 0.0f;             // im = 0
-            }
-        }
-        if (giSamplingMode == 3)
-        {
-            int count = len / 4;
-            for (int i = 0; i < count; i++)
-            {
-                // re
-                buf[i * 8 + 1] = 0.0f;             // im = 0
-
-                buf[i * 8 + 2] = -buf[i * 8 + 2];  // re = -re
-                buf[i * 8 + 3] = 0.0f;             // im = 0
-
-                // re
-                buf[i * 8 + 5] = 0.0f;             // im = 0
-
-                buf[i * 8 + 6] = -buf[i * 8 + 6];  // re = -re
                 buf[i * 8 + 7] = 0.0f;             // im = 0
             }
         }
@@ -150,10 +150,14 @@ void UpdateDialog()
     Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_EXT_CLOCK), giExternalClock);
 
     /* GPO checkbox */
-    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO_1), ((giUserGPO & USER_GPO_1) == USER_GPO_1));
-    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO_2), ((giUserGPO & USER_GPO_2) == USER_GPO_2));
-    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO_3), ((giUserGPO & USER_GPO_3) == USER_GPO_3));
-    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO_4), ((giUserGPO & USER_GPO_4) == USER_GPO_4));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO0), ((giUserGPO & 0x01) == 0x01));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO1), ((giUserGPO & 0x02) == 0x02));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO1), ((giUserGPO & 0x04) == 0x04));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO1), ((giUserGPO & 0x08) == 0x08));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO0), ((giUserGPO & 0x10) == 0x10));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO1), ((giUserGPO & 0x20) == 0x20));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO1), ((giUserGPO & 0x40) == 0x40));
+    Button_SetCheck(GetDlgItem(ghDialog, IDC_CHECK_GPO1), ((giUserGPO & 0x80) == 0x80));
 
     /* Update LNA slider */
     SendDlgItemMessage(ghDialog, IDC_SLIDER_GAIN_LNA, TBM_SETPOS, TRUE, ((int)giLnaGain));
@@ -197,7 +201,7 @@ static int StopThread()
 	}
     
     int r = fobos_rx_cancel_async(gDev);
-    
+    Sleep(500);
     WaitForSingleObject(ghWorker, INFINITE);
     CloseHandle(ghWorker);
     ghWorker = INVALID_HANDLE_VALUE;
@@ -319,10 +323,10 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
         /* Command message */
         case WM_COMMAND:
         {
-
-            switch (GET_WM_COMMAND_ID(wParam, lParam)) 
+            DWORD CmdId = GET_WM_COMMAND_ID(wParam, lParam);
+            switch (CmdId)
 			{
-            /* Changed device */
+                // Changed device
                 case IDC_COMBO_DEVICE:
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == CBN_SELCHANGE)
@@ -357,13 +361,14 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                     }
                 }
                 break;
-                /* Changed samle rate */
+                // Changed samle rate
                 case IDC_COMBO_SR:
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == CBN_SELCHANGE)
                     {
                         int sr = ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam));
-                        if (giSrateIdx != sr) {
+                        if (giSrateIdx != sr) 
+                        {
                             if (sr >= 0 && sr < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
                             {
                                 giSrateIdx = sr;
@@ -380,7 +385,7 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                     return TRUE;
                 }
                 break;
-
+                // Sampling mode combo
                 case IDC_COMBO_SAMPLING_MODE:
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == CBN_SELCHANGE)
@@ -409,7 +414,7 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                     return TRUE;
                 }
                 break;
-
+                // Extrsnal clock check
                 case IDC_CHECK_EXT_CLOCK:
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == BN_CLICKED)
@@ -430,80 +435,28 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                 }
                 break;
 
-                /* GPO checkbox clicked */
-                case IDC_CHECK_GPO_1:
+                // GPO checkbox clicked
+                case IDC_CHECK_GPO0:
+                case IDC_CHECK_GPO1:
+                case IDC_CHECK_GPO2:
+                case IDC_CHECK_GPO3:
+                case IDC_CHECK_GPO4:
+                case IDC_CHECK_GPO5:
+                case IDC_CHECK_GPO6:
+                case IDC_CHECK_GPO7:
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == BN_CLICKED)
                     {
-                        if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_1) == BST_CHECKED)
+                        uint32_t GPO_Bit = 1 << (CmdId - IDC_CHECK_GPO0);
+
+                        if (IsDlgButtonChecked(hwndDlg, CmdId) == BST_CHECKED)
                         {
-                            giUserGPO |= USER_GPO_1;
+                            giUserGPO |= GPO_Bit;
                         }
-                        else if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_1) == BST_UNCHECKED)
+                        else 
                         {
-                            giUserGPO &= ~USER_GPO_1;
+                            giUserGPO &= ~GPO_Bit;
                         }
-                        UpdateDialog();
-                        int r = fobos_rx_set_user_gpo(gDev, giUserGPO);
-                        if (r != 0)
-                            return FALSE;
-                    }
-                    return TRUE;
-                }
-                break;
-                case IDC_CHECK_GPO_2:
-                {
-                    if (GET_WM_COMMAND_CMD(wParam, lParam) == BN_CLICKED)
-                    {
-                        if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_2) == BST_CHECKED)
-                        {
-                            giUserGPO |= USER_GPO_2;
-                        }
-                        else if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_2) == BST_UNCHECKED)
-                        {
-                            giUserGPO &= ~USER_GPO_2;
-                        }
-                        UpdateDialog();
-                        int r = fobos_rx_set_user_gpo(gDev, giUserGPO);
-                        if (r != 0)
-                            return FALSE;
-                    }
-                    return TRUE;
-                }
-                break;
-                case IDC_CHECK_GPO_3:
-                {
-                    if (GET_WM_COMMAND_CMD(wParam, lParam) == BN_CLICKED)
-                    {
-                        if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_3) == BST_CHECKED)
-                        {
-                            giUserGPO |= USER_GPO_3;
-                        }
-                        else if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_3) == BST_UNCHECKED)
-                        {
-                            giUserGPO &= ~USER_GPO_3;
-                        }
-                        UpdateDialog();
-                        int r = fobos_rx_set_user_gpo(gDev, giUserGPO);
-                        if (r != 0)
-                            return FALSE;
-                    }
-                    return TRUE;
-                }
-                break;
-                case IDC_CHECK_GPO_4:
-                {
-                    if (GET_WM_COMMAND_CMD(wParam, lParam) == BN_CLICKED)
-                    {
-                        if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_4) == BST_CHECKED)
-                        {
-                            giUserGPO |= USER_GPO_4;
-                        }
-                        else if (IsDlgButtonChecked(hwndDlg, IDC_CHECK_GPO_4) == BST_UNCHECKED)
-                        {
-                            giUserGPO &= ~USER_GPO_4;
-                        }
-                        UpdateDialog();
                         int r = fobos_rx_set_user_gpo(gDev, giUserGPO);
                         if (r != 0)
                             return FALSE;
@@ -611,8 +564,6 @@ bool EXTIO_API InitHW(char *name, char *model, int& type)
 extern "C"
 bool EXTIO_API OpenHW(void)
 {
-    //MessageBox(NULL, TEXT("OpenHW"),NULL, MB_OK);
-
     int r = fobos_rx_open(&gDev, giDeviceIdx);
 
     char hw_revision[32];
@@ -621,9 +572,7 @@ bool EXTIO_API OpenHW(void)
     char product[32];
     char serial[32];
     fobos_rx_get_board_info(gDev,  hw_revision, fw_version, manufacturer, product, serial);
-    sprintf(gBoardInfo, "hw: rev.%s fw: v.%s", hw_revision, fw_version);
-
-
+    sprintf(gBoardInfo, "hw: r.%s fw: v.%s", hw_revision, fw_version);
     if (r != 0) 
     {
         //MessageBox(NULL, TEXT("Open Error"),NULL, MB_OK);
@@ -819,8 +768,6 @@ void EXTIO_API VersionInfo(const char * progname, int ver_major, int ver_minor)
 extern "C"
 int EXTIO_API ExtIoGetSrates( int srate_idx, double * samplerate )
 {
-    //MessageBox(NULL, TEXT("ExtIoGetSrates"),NULL, MB_OK);
-
     if (srate_idx < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
     {
         *samplerate = gSampleRates[srate_idx].value;
@@ -913,8 +860,9 @@ void EXTIO_API ExtIoSetSetting(int idx, const char * value)
 
         case 1:
         tempInt = atoi(value);
-        if (tempInt >= 0 && tempInt < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
-            giSrateIdx = tempInt;
+        if (tempInt <= 0) tempInt = 0;
+        if (tempInt > (sizeof(gSampleRates) / sizeof(gSampleRates[0]) - 1)) tempInt = sizeof(gSampleRates) / sizeof(gSampleRates[0]) - 1;
+        giSrateIdx = tempInt;
         break;
 
         case 2:

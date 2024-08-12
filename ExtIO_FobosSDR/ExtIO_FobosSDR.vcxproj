@@ -100,7 +100,7 @@
     <Link>
       <Version>1.0</Version>
       <ModuleDefinitionFile>ExtIO_FobosSDR.def</ModuleDefinitionFile>
-      <GenerateDebugInformation>Debug</GenerateDebugInformation>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
