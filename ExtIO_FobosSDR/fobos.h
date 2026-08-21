@@ -11,7 +11,11 @@
 //  2024.04.08
 //  2024.05.29 - sync mode (fobos_rx_start_sync, fobos_rx_read_sync, fobos_rx_stop_sync)
 //  2024.06.21 - update fow hw rev.3.0.0
-//  2024.06.08 - new band plan
+//  2024.07.08 - new band plan
+//  2024.07.20 - IQ calibration on the fly
+//  2025.01.16 - v.2.3.2 distinguishing the alternative firmware, fobos_rx_write_firmware()
+//  2025.01.19 - v.2.3.2 fobos_rx_reset()
+//  2025.08.23 - v.2.4.0 DC filter improved, VGA gain fixed
 //==============================================================================
 #ifndef LIB_FOBOS_H
 #include <stdint.h>
@@ -51,6 +55,8 @@ API_EXPORT int CALL_CONV fobos_rx_list_devices(char * serials);
 API_EXPORT int CALL_CONV fobos_rx_open(struct fobos_dev_t ** out_dev, uint32_t index);
 // close device
 API_EXPORT int CALL_CONV fobos_rx_close(struct fobos_dev_t * dev);
+// close and reset device
+API_EXPORT int CALL_CONV fobos_rx_reset(struct fobos_dev_t * dev);
 // get the board info
 API_EXPORT int CALL_CONV fobos_rx_get_board_info(struct fobos_dev_t * dev, char * hw_revision, char * fw_version, char * manufacturer, char * product, char * serial);
 // set rx frequency, Hz
@@ -65,8 +71,6 @@ API_EXPORT int CALL_CONV fobos_rx_set_vga_gain(struct fobos_dev_t * dev, unsigne
 API_EXPORT int CALL_CONV fobos_rx_get_samplerates(struct fobos_dev_t * dev, double * values, unsigned int * count);
 // set sample rate nearest to specified
 API_EXPORT int CALL_CONV fobos_rx_set_samplerate(struct fobos_dev_t * dev, double value, double * actual);
-// set hardware low pass filter (0 .. 2)
-//API_EXPORT int CALL_CONV fobos_rx_set_lpf(struct fobos_dev_t * dev, int value);
 // statr the iq rx streaming
 API_EXPORT int CALL_CONV fobos_rx_read_async(struct fobos_dev_t * dev, fobos_rx_cb_t cb, void *ctx, uint32_t buf_count, uint32_t buf_length);
 // stop the iq rx streaming
@@ -85,10 +89,14 @@ API_EXPORT int CALL_CONV fobos_rx_start_sync(struct fobos_dev_t * dev, uint32_t 
 API_EXPORT int CALL_CONV fobos_rx_read_sync(struct fobos_dev_t * dev, float * buf, uint32_t * actual_buf_length);
 // stop synchronous rx mode
 API_EXPORT int CALL_CONV fobos_rx_stop_sync(struct fobos_dev_t * dev);
+// read firmware from the device
+API_EXPORT int CALL_CONV fobos_rx_read_firmware(struct fobos_dev_t* dev, const char * file_name, int verbose);
+// write firmware file to the device
+API_EXPORT int CALL_CONV fobos_rx_write_firmware(struct fobos_dev_t* dev, const char * file_name, int verbose);
 // obtain error text by code
 API_EXPORT const char * CALL_CONV fobos_rx_error_name(int error);
 //==============================================================================
-API_EXPORT int CALL_CONV fobos_rx_test(struct fobos_dev_t* dev, int test, int value);
+
 #ifdef __cplusplus
 }
 #endif

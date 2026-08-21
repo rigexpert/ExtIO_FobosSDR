@@ -4,12 +4,11 @@
 #define HWMODEL				"Fobos SDR"
 #define SETTINGS_IDENTIFIER	"Fobos SDR"
 #define MAX_DEVICES         64
-#define LO_MIN				50000000LL
-#define LO_MAX				6000000000LL
 #define EXT_BLOCKLEN		(4096*8)
 
 #include "ExtIO_FobosSDR.h"
 #include "fobos.h"
+#include "fobos_sdr.h"
 #include "resource.h"
 
 //==============================================================================
@@ -25,6 +24,7 @@
 
 #pragma warning(disable : 4996)
 #pragma comment(lib, "fobos.lib")
+#pragma comment(lib, "fobos_sdr.lib")
 #define snprintf	_snprintf
 
 static HMODULE hInst;
@@ -35,18 +35,8 @@ typedef struct sr
     const wchar_t* name;
 } sr_t;
 
-static sr_t gSampleRates[] = 
-{
-	{  8000000.0, L"8 MHz" },
-    { 10000000.0, L"10 MHz" },
-	{ 12500000.0, L"12.5 MHz" },
-    { 16000000.0, L"16 MHz" },
-    { 20000000.0, L"20 MHz" },
-	{ 25000000.0, L"25 MHz" },
-    { 32000000.0, L"32 MHz" },
-    { 40000000.0, L"40 MHz" },
-    { 50000000.0, L"50 MHz" }
-};
+static double * gSampleRates;
+static unsigned int gSampleRatesCount;
 
 static bool SDR_supports_settings = false;  // assume not supported
 static bool SDR_settings_valid = false;		// assume settings are for some other ExtIO
@@ -55,26 +45,21 @@ static char SDR_progname[32+1] = "\0";
 static int  SDR_ver_major = -1;
 static int  SDR_ver_minor = -1;
 
-fobos_dev_t* gDev = NULL;
+fobos_dev_t* fobos_dev = NULL;
+fobos_sdr_dev_t * fobos_sdr_dev = NULL;
 static int giDeviceCount = 0;
-static int giDeviceIdx = 0;
+static int gSelectedIdx = 0;
 static char gSerials[MAX_DEVICES][64];
+static int gDevIdxx[MAX_DEVICES];
+static int gDevTypes[MAX_DEVICES];
 static int giStreaming;
-static char gBoardInfo[64];
+static char gLibInfo[128];
+static char gBoardInfo[128];
 
 static HANDLE ghWorker = INVALID_HANDLE_VALUE;
 
-#define USER_GPO0		1
-#define USER_GPO1		2
-#define USER_GPO2		4
-#define USER_GPO3		8
-#define USER_GPO4		8
-#define USER_GPO5		8
-#define USER_GPO6		8
-#define USER_GPO7		8
-
 static int64_t 	gdLOfreq = 100000000;
-static int		giSrateIdx = 9; // 
+static int		giSrateIdx = 5; // 
 static int		giSamplingMode = 0;
 static int		giExternalClock = 0;
 static int		giLnaGain = 0;
@@ -89,47 +74,62 @@ extern pfnExtIOCallback	pfnCallback = NULL;
 
 HWND ghDialog = nullptr;
 //==============================================================================
-void RxCallBack(float* buf, uint32_t len, void* ctx)
+void convert_samples(float* buf, uint32_t len)
+{
+    if (giSamplingMode == 2)
+    {
+        int count = len / 4;
+        for (int i = 0; i < count; i++)
+        {
+            // re
+            buf[i * 8 + 1] = 0.0f;             // im = 0
+
+            buf[i * 8 + 2] = -buf[i * 8 + 2];  // re = -re
+            buf[i * 8 + 3] = 0.0f;             // im = 0
+
+                                               // re
+            buf[i * 8 + 5] = 0.0f;             // im = 0
+
+            buf[i * 8 + 6] = -buf[i * 8 + 6];  // re = -re
+            buf[i * 8 + 7] = 0.0f;             // im = 0
+        }
+    }
+    if (giSamplingMode == 3)
+    {
+        int count = len / 4;
+        for (int i = 0; i < count; i++)
+        {
+            buf[i * 8 + 0] = buf[i * 8 + 1];   // re = im
+            buf[i * 8 + 1] = 0.0f;             // im = 0
+
+            buf[i * 8 + 2] = -buf[i * 8 + 3]; // re = -im
+            buf[i * 8 + 3] = 0.0f;             // im = 0
+
+            buf[i * 8 + 4] = buf[i * 8 + 5];   // re = im
+            buf[i * 8 + 5] = 0.0f;             // im = 0
+
+            buf[i * 8 + 6] = -buf[i * 8 + 7]; // re = -im
+            buf[i * 8 + 7] = 0.0f;             // im = 0
+        }
+    }
+}
+//==============================================================================
+void fobos_callback(float* buf, uint32_t len, void* ctx)
 {
     giStreaming = 1;
     if (pfnCallback)
     {
-        if (giSamplingMode == 2)
-        {
-            int count = len / 4;
-            for (int i = 0; i < count; i++)
-            {
-                // re
-                buf[i * 8 + 1] = 0.0f;             // im = 0
-
-                buf[i * 8 + 2] = -buf[i * 8 + 2];  // re = -re
-                buf[i * 8 + 3] = 0.0f;             // im = 0
-
-                                                   // re
-                buf[i * 8 + 5] = 0.0f;             // im = 0
-
-                buf[i * 8 + 6] = -buf[i * 8 + 6];  // re = -re
-                buf[i * 8 + 7] = 0.0f;             // im = 0
-            }
-        }
-        if (giSamplingMode == 3)
-        {
-            int count = len / 4;
-            for (int i = 0; i < count; i++)
-            {
-                buf[i * 8 + 0] = buf[i * 8 + 1];   // re = im
-                buf[i * 8 + 1] = 0.0f;             // im = 0
-
-                buf[i * 8 + 2] = - buf[i * 8 + 3]; // re = -im
-                buf[i * 8 + 3] = 0.0f;             // im = 0
-
-                buf[i * 8 + 4] = buf[i * 8 + 5];   // re = im
-                buf[i * 8 + 5] = 0.0f;             // im = 0
-
-                buf[i * 8 + 6] = - buf[i * 8 + 7]; // re = -im
-                buf[i * 8 + 7] = 0.0f;             // im = 0
-            }
-        }
+        convert_samples(buf, len);
+        pfnCallback(EXT_BLOCKLEN, 0, 0.0F, buf);
+    }
+}
+//==============================================================================
+void fobos_sdr_callback(float* buf, uint32_t len, struct fobos_sdr_dev_t* sender, void * user)
+{
+    giStreaming = 1;
+    if (pfnCallback)
+    {
+        convert_samples(buf, len);
         pfnCallback(EXT_BLOCKLEN, 0, 0.0F, buf);
     }
 }
@@ -137,13 +137,14 @@ void RxCallBack(float* buf, uint32_t len, void* ctx)
 void UpdateDialog()
 {
     if (ghDialog == nullptr) return;
-    ComboBox_SetCurSel(GetDlgItem(ghDialog, IDC_COMBO_DEVICE), giDeviceIdx);// Device dropdown
+    ComboBox_SetCurSel(GetDlgItem(ghDialog, IDC_COMBO_DEVICE), gSelectedIdx);// Device dropdown
     EnableWindow(GetDlgItem(ghDialog, IDC_COMBO_DEVICE), !giStreaming);
     ComboBox_SetCurSel(GetDlgItem(ghDialog, IDC_COMBO_SR), giSrateIdx);  // Samplerate dropdown
     EnableWindow(GetDlgItem(ghDialog, IDC_COMBO_SR), !giStreaming);
 
+	SetWindowTextA(GetDlgItem(ghDialog, IDC_EDIT_API), gLibInfo);
     SetWindowTextA(GetDlgItem(ghDialog, IDC_EDIT_BOARD), gBoardInfo);
-    SetWindowTextA(GetDlgItem(ghDialog, IDC_EDIT_SERIAL), gSerials[giDeviceIdx]);
+    SetWindowTextA(GetDlgItem(ghDialog, IDC_EDIT_SERIAL), gSerials[gSelectedIdx]);
 
     ComboBox_SetCurSel(GetDlgItem(ghDialog, IDC_COMBO_SAMPLING_MODE), giSamplingMode);
 
@@ -166,29 +167,44 @@ void UpdateDialog()
     SendDlgItemMessage(ghDialog, IDC_SLIDER_GAIN_VGA, TBM_SETPOS, TRUE, ((int)giVgaGain));
 }
 //==============================================================================
+void FillSampleRates(HWND hwndDlg)
+{
+	if (hwndDlg == nullptr) return;
+	ComboBox_ResetContent(GetDlgItem(hwndDlg, IDC_COMBO_SR));
+	for (int i = 0; i < gSampleRatesCount; i++)
+	{
+		wchar_t witem[64];
+		wsprintf(witem, L"%d", (int)gSampleRates[i]);
+		ComboBox_AddString(GetDlgItem(hwndDlg, IDC_COMBO_SR), witem);
+	}
+}
+//==============================================================================
 unsigned int __stdcall ThreadProc(void* p)
 {
-    int r = fobos_rx_read_async(gDev, RxCallBack, NULL, 16, EXT_BLOCKLEN);
-    return r;
+    if (fobos_dev)
+    {
+        return fobos_rx_read_async(fobos_dev, fobos_callback, NULL, 16, EXT_BLOCKLEN);
+    }
+    if (fobos_sdr_dev)
+    {
+        return fobos_sdr_read_async(fobos_sdr_dev, fobos_sdr_callback, NULL, 16, EXT_BLOCKLEN);
+    }
+    return -1;
 }
 //==============================================================================
 static int StartThread()
 {
-    //If already running, exit
 	if (ghWorker != INVALID_HANDLE_VALUE)
 	{
 		return -1;
 	}
     giStreaming = 1;
     UpdateDialog();
-
     ghWorker = (HANDLE)_beginthreadex(0, 0, &ThreadProc, 0, 0, 0);
-
 	if (ghWorker == INVALID_HANDLE_VALUE)
 	{
         return -1;
 	}
-
     SetThreadPriority(ghWorker, THREAD_PRIORITY_TIME_CRITICAL);
     return 0;
 }
@@ -200,26 +216,37 @@ static int StopThread()
 		return -1;
 	}
     
-    int r = fobos_rx_cancel_async(gDev);
+    int r = 0;
+    if (fobos_dev)
+    {
+        r = fobos_rx_cancel_async(fobos_dev);
+    }
+    if (fobos_sdr_dev)
+    {
+        r = fobos_sdr_cancel_async(fobos_sdr_dev);
+    }
     Sleep(500);
     WaitForSingleObject(ghWorker, INFINITE);
     CloseHandle(ghWorker);
     ghWorker = INVALID_HANDLE_VALUE;
     giStreaming = 0;
+	cprintf("UpdateDialog..\n");
     UpdateDialog();
+	cprintf("UpdateDialog..Ok\n");
     return r;
 }
 //==============================================================================
 static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    //cprintf("m");
+    int r;
     switch (uMsg)
     {
-        /* Init starting variables */
         case WM_INITDIALOG:
         {
             char info [128];
-            /* Add device choices */
+            sprintf(info, "build %s at %s", __DATE__, __TIME__);
+            SetWindowTextA(GetDlgItem(hwndDlg, IDC_EDIT_EXTIO), info);
+
             for (int i = 0; i < giDeviceCount; i++)
             {
                 sprintf(info, "Fobos SDR %s", gSerials[i]);
@@ -228,18 +255,7 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                 ComboBox_AddString(GetDlgItem(hwndDlg, IDC_COMBO_DEVICE), winfo);
             }
 
-            char lib_version[32];
-            char drv_version[32];
-            fobos_rx_get_api_info(lib_version, drv_version);
-            sprintf(info, "lib v.%s drv %s", lib_version, drv_version);
-            SetWindowTextA(GetDlgItem(hwndDlg, IDC_EDIT_API), info);
-
-
-            /* Add samplerate choices */
-            for (int i = 0; i < (sizeof(gSampleRates) / sizeof(gSampleRates[0])); i++)
-            {
-                ComboBox_AddString(GetDlgItem(hwndDlg, IDC_COMBO_SR), gSampleRates[i].name);
-            }
+			FillSampleRates(hwndDlg);
 
             ComboBox_AddString(GetDlgItem(hwndDlg, IDC_COMBO_SAMPLING_MODE), L"RF");
             ComboBox_AddString(GetDlgItem(hwndDlg, IDC_COMBO_SAMPLING_MODE), L"IQ (HF1+HF2) direct sampling");
@@ -247,7 +263,6 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
             ComboBox_AddString(GetDlgItem(hwndDlg, IDC_COMBO_SAMPLING_MODE), L"HF2 direct sampling");
 
 
-            /* Add tickmarks, set range for LNA slider */
             SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_LNA, TBM_SETRANGEMIN, FALSE, 0);
             SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_LNA, TBM_SETRANGEMAX, FALSE, 3);
             for (int i = 0; i <= 3; i++)
@@ -255,10 +270,9 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                 SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_LNA, TBM_SETTIC, FALSE, i);
             }
 
-            /* Add tickmarks, set range for VGA slider */
             SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_VGA, TBM_SETRANGEMIN, FALSE, 0);
-            SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_VGA, TBM_SETRANGEMAX, FALSE, 15);
-            for (int i = 0; i <= 15; i++)
+            SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_VGA, TBM_SETRANGEMAX, FALSE, 31);
+            for (int i = 0; i <= 31; i++)
             {
                 SendDlgItemMessage(hwndDlg, IDC_SLIDER_GAIN_VGA, TBM_SETTIC, FALSE, i);
             }
@@ -289,7 +303,14 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
 
                     if (giLnaGain <= 15)
                     {
-                        int r = fobos_rx_set_lna_gain(gDev, giLnaGain);
+                        if (fobos_dev)
+                        {
+                            r = fobos_rx_set_lna_gain(fobos_dev, giLnaGain);
+                        }
+                        if (fobos_sdr_dev)
+                        {
+                            r = fobos_sdr_set_lna_gain(fobos_sdr_dev, giLnaGain);
+                        }
                         if (r != 0)
                             return FALSE;
                     }
@@ -307,9 +328,16 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
 
                     UpdateDialog();
 
-                    if (giVgaGain <= 15)
+                    if (giVgaGain <= 31)
                     {
-                        int r = fobos_rx_set_vga_gain(gDev, giVgaGain);
+                        if (fobos_dev)
+                        {
+                            r = fobos_rx_set_vga_gain(fobos_dev, giVgaGain);
+                        }
+                        if (fobos_sdr_dev)
+                        {
+                            r = fobos_sdr_set_vga_gain(fobos_sdr_dev, giVgaGain);
+                        }
                         if (r != 0)
                             return FALSE;
                     }
@@ -331,18 +359,20 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == CBN_SELCHANGE)
                     {
-                        if (giDeviceIdx != ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam)))
+                        if (gSelectedIdx != ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam)))
                         {
-
                             gbChangeHW = true;
                             int64_t freq = -1;
-                            if (gbStartHW)
-                            {
-                                freq = GetHWLO64();
-                                StopHW();
-                                CloseHW();
-                            }
-                            giDeviceIdx = ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam));
+							if (gbInitHW)
+							{
+								if (gbStartHW)
+								{
+									freq = GetHWLO64();
+									StopHW();
+								}
+								CloseHW();
+							}
+                            gSelectedIdx = ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam));
                             if (OpenHW() && freq != -1)
                             {
                                 StartHW64(freq);
@@ -369,10 +399,17 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                         int sr = ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam));
                         if (giSrateIdx != sr) 
                         {
-                            if (sr >= 0 && sr < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
+                            if (sr >= 0 && sr < gSampleRatesCount)
                             {
                                 giSrateIdx = sr;
-                                int r = fobos_rx_set_samplerate(gDev, gSampleRates[giSrateIdx].value, 0);
+                                if (fobos_dev)
+                                {
+                                    r = fobos_rx_set_samplerate(fobos_dev, gSampleRates[giSrateIdx], 0);
+                                }
+                                if (fobos_sdr_dev)
+                                {
+                                    r = fobos_sdr_set_samplerate(fobos_sdr_dev, gSampleRates[giSrateIdx]);
+                                }
                                 if (r != 0)
                                     return FALSE;
 
@@ -391,14 +428,27 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == CBN_SELCHANGE)
                     {
                         int mode = ComboBox_GetCurSel(GET_WM_COMMAND_HWND(wParam, lParam));
-                        int r = 0;
                         if (mode == 0)
                         {
-                            r = fobos_rx_set_direct_sampling(gDev, 0);
+                            if (fobos_dev)
+                            {
+                                r = fobos_rx_set_direct_sampling(fobos_dev, 0);
+                            }
+                            if (fobos_sdr_dev)
+                            {
+                                r = fobos_sdr_set_direct_sampling(fobos_sdr_dev, 0);
+                            }
                         }
                         else
                         {
-                            r = fobos_rx_set_direct_sampling(gDev, 1);
+                            if (fobos_dev)
+                            {
+                                r = fobos_rx_set_direct_sampling(fobos_dev, 1);
+                            }
+                            if (fobos_sdr_dev)
+                            {
+                                r = fobos_sdr_set_direct_sampling(fobos_sdr_dev, 1);
+                            }
                         }
                         if (giSamplingMode != mode)
                         {
@@ -427,7 +477,14 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                         {
                             giExternalClock = 0;
                         }
-                        int r = fobos_rx_set_clk_source(gDev, giExternalClock);
+                        if (fobos_dev)
+                        {
+                            r = fobos_rx_set_clk_source(fobos_dev, giExternalClock);
+                        }
+                        if (fobos_sdr_dev)
+                        {
+                            r = fobos_sdr_set_clk_source(fobos_sdr_dev, giExternalClock);
+                        }
                         if (r != 0)
                             return FALSE;
                     }
@@ -457,7 +514,14 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                         {
                             giUserGPO &= ~GPO_Bit;
                         }
-                        int r = fobos_rx_set_user_gpo(gDev, giUserGPO);
+                        if (fobos_dev)
+                        {
+                            r = fobos_rx_set_user_gpo(fobos_dev, giUserGPO);
+                        }
+                        if (fobos_sdr_dev)
+                        {
+                            r = fobos_sdr_set_user_gpo(fobos_sdr_dev, giUserGPO);
+                        }
                         if (r != 0)
                             return FALSE;
                     }
@@ -528,27 +592,48 @@ bool EXTIO_API InitHW(char *name, char *model, int& type)
 
     if ( !gbInitHW )
     {
-        char lib_version[64];
-        char drv_version[64];
-        fobos_rx_get_api_info(lib_version, drv_version);
         // do initialization
         char serials[256];
         memset(serials, 0, sizeof(serials));
-        giDeviceCount = fobos_rx_list_devices(serials);
+        
+        int count = fobos_rx_list_devices(serials);
         char * p_serials = serials;
-        for (size_t i = 0; i < giDeviceCount; i++)
+        size_t s = 0;
+        for (size_t i = 0; i < count; i++)
         {
             char * serial = strtok(p_serials, " ");
             if (serial)
             {
-                strcpy(gSerials[i], serial);
+                strcpy(gSerials[s], serial);
+                gDevIdxx[s] = i;
+                gDevTypes[s] = 0;
+                s++;
             }
             else
             {
                 break;
             }
         }
-
+		memset(serials, 0, sizeof(serials));
+        count = fobos_sdr_list_devices(serials);
+        p_serials = serials;
+        for (size_t i = 0; i < count; i++)
+        {
+            char * serial = strtok(p_serials, " ");
+            if (serial)
+            {
+                strcpy(gSerials[s], serial);
+                strcat(gSerials[s], " (agile)");
+                gDevIdxx[s] = i;
+                gDevTypes[s] = 1;
+                s++;
+            }
+            else
+            {
+                break;
+            }
+        }
+        giDeviceCount = s;
         if (!giDeviceCount)
         {
             MessageBox(NULL, TEXT("No Fobos SDR devices found"), TEXT("ExtIO Fobos SDR"), MB_ICONERROR | MB_OK);
@@ -564,30 +649,78 @@ bool EXTIO_API InitHW(char *name, char *model, int& type)
 extern "C"
 bool EXTIO_API OpenHW(void)
 {
-    int r = fobos_rx_open(&gDev, giDeviceIdx);
-
-    char hw_revision[32];
-    char fw_version[32];
-    char manufacturer[32];
-    char product[32];
-    char serial[32];
-    fobos_rx_get_board_info(gDev,  hw_revision, fw_version, manufacturer, product, serial);
-    sprintf(gBoardInfo, "hw: r.%s fw: v.%s", hw_revision, fw_version);
-    if (r != 0) 
+    int r = 0;
+    if (gDevTypes[gSelectedIdx] == 0)
     {
-        //MessageBox(NULL, TEXT("Open Error"),NULL, MB_OK);
+        r = fobos_rx_open(&fobos_dev, gDevIdxx[gSelectedIdx]);
+    }
+    else if (gDevTypes[gSelectedIdx] == 1)
+    {
+        r = fobos_sdr_open(&fobos_sdr_dev, gDevIdxx[gSelectedIdx]);
+    }
+    if (r != 0)
+    {
         return false;
     }
-    r = fobos_rx_set_samplerate(gDev, gSampleRates[giSrateIdx].value, 0);
+    char hw_revision[64];
+    char fw_version[64];
+    char manufacturer[64];
+    char product[64];
+    char serial[64];
+    char lib_version[64];
+    char drv_version[64];
+    if (fobos_dev)
+    {
+        r = fobos_rx_get_api_info(lib_version, drv_version);
+        r = fobos_rx_get_board_info(fobos_dev, hw_revision, fw_version, manufacturer, product, serial);
+    }
+    if (fobos_sdr_dev)
+    {
+        r = fobos_sdr_get_api_info(lib_version, drv_version);
+        r = fobos_sdr_get_board_info(fobos_sdr_dev, hw_revision, fw_version, manufacturer, product, serial);
+    }
     if (r != 0)
+    {
         return false;
-
+    }
+    sprintf(gLibInfo, "lib v.%s drv %s", lib_version, drv_version);
+    sprintf(gBoardInfo, "hw: r.%s fw: v.%s", hw_revision, fw_version);
+    if (fobos_dev)
+    {
+        r = fobos_rx_get_samplerates(fobos_dev, 0, &gSampleRatesCount);
+        delete gSampleRates;
+        gSampleRates = new double[gSampleRatesCount];
+        r = fobos_rx_get_samplerates(fobos_dev, gSampleRates, &gSampleRatesCount);
+    }
+    if (fobos_sdr_dev)
+    {
+        r = fobos_sdr_get_samplerates(fobos_sdr_dev, 0, &gSampleRatesCount);
+        delete gSampleRates;
+        gSampleRates = new double[gSampleRatesCount];
+        r = fobos_sdr_get_samplerates(fobos_sdr_dev, gSampleRates, 0);
+    }
+	FillSampleRates(ghDialog);
+    if (fobos_dev)
+    {
+        r = fobos_rx_set_samplerate(fobos_dev, gSampleRates[giSrateIdx], 0);
+    }
+    if (fobos_sdr_dev)
+    {
+        r = fobos_sdr_set_samplerate(fobos_sdr_dev, gSampleRates[giSrateIdx]);
+    }
+    if (r != 0)
+    {
+        return false;
+    }
+    if (fobos_sdr_dev)
+    {
+        r = fobos_sdr_set_auto_bandwidth(fobos_sdr_dev, 0.9);
+    }
     if (!gbChangeHW)
     {
         ghDialog = CreateDialog(hInst, MAKEINTRESOURCE(IDD_SETTINGS_DLG), NULL, (DLGPROC)MainDlgProc);
         ShowWindow(ghDialog, SW_HIDE);
     }
-
     return gbInitHW;
 }
 //==============================================================================
@@ -601,10 +734,12 @@ int  EXTIO_API StartHW(long LOfreq)
 extern "C"
 int EXTIO_API StartHW64(int64_t LOfreq)
 {
+    if (LOfreq < 0)
+        LOfreq += 4294967296LL;
     if (!gbInitHW)
         return -1;
 
-    if (!gDev)
+    if ((!fobos_dev) && (!fobos_sdr_dev))
         return -1;
 
     SetHWLO64(LOfreq);
@@ -629,10 +764,18 @@ void EXTIO_API StopHW(void)
 extern "C"
 void EXTIO_API CloseHW(void)
 {
-    if (gbInitHW )
+    if (gbInitHW)
     {
-        fobos_rx_close(gDev);
-        gDev = NULL;
+        if (fobos_dev)
+        {
+            fobos_rx_close(fobos_dev);
+        }
+        fobos_dev = NULL;
+        if (fobos_sdr_dev)
+        {
+            fobos_sdr_close(fobos_sdr_dev);
+        }
+        fobos_sdr_dev = NULL;
         if (!gbChangeHW)
         {
             if (ghDialog != NULL)
@@ -659,14 +802,6 @@ int64_t EXTIO_API SetHWLO64(int64_t LOfreq)
     // check limits
     if ((giSamplingMode == 0) || (giSamplingMode == 1))
     {
-        if (LOfreq < LO_MIN)
-        {
-            ret = LO_MIN;
-        }
-        else if (LOfreq > LO_MAX)
-        {
-            ret = LO_MAX;
-        }
         // take frequency
         if (ret != LOfreq)
         {
@@ -678,7 +813,15 @@ int64_t EXTIO_API SetHWLO64(int64_t LOfreq)
         gdLOfreq = ret;
         if (gbInitHW)
         {
-            int r = fobos_rx_set_frequency(gDev, (double)LOfreq, 0);
+            int r = 0;
+            if (fobos_dev)
+            {
+                r = fobos_rx_set_frequency(fobos_dev, (double)LOfreq, 0);
+            }
+            if (fobos_sdr_dev)
+            {
+                r = fobos_sdr_set_frequency(fobos_sdr_dev, (double)LOfreq);
+            }
             if (r != 0)
             {
                 //MessageBox(NULL, TEXT("Set Freq Error!"),TEXT("Error!"), MB_OK|MB_ICONERROR);
@@ -687,7 +830,7 @@ int64_t EXTIO_API SetHWLO64(int64_t LOfreq)
     }
     else
     {
-        ret = int64_t(gSampleRates[giSrateIdx].value) / 2;
+        ret = int64_t(gSampleRates[giSrateIdx]) / 2;
         if (pfnCallback)
             pfnCallback(-1, extHw_Changed_LO, 0.0F, 0);
     }
@@ -731,7 +874,7 @@ int64_t EXTIO_API GetHWLO64(void)
     }
     else
     {
-        ret = int64_t(gSampleRates[giSrateIdx].value) / 2;
+        ret = int64_t(gSampleRates[giSrateIdx]) / 2;
     }
     return ret;
 }
@@ -739,11 +882,9 @@ int64_t EXTIO_API GetHWLO64(void)
 extern "C"
 long EXTIO_API GetHWSR(void)
 {
-    if (giSrateIdx >= 0 && giSrateIdx < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
-    {
-        return (long)gSampleRates[giSrateIdx].value;
-    }
-    return 0L;
+    if (giSrateIdx < 0) giSrateIdx = 0;
+    if (giSrateIdx >= gSampleRatesCount) giSrateIdx = gSampleRatesCount - 1;
+    return (long)gSampleRates[giSrateIdx];
 }
 //==============================================================================
 extern "C"
@@ -766,11 +907,11 @@ void EXTIO_API VersionInfo(const char * progname, int ver_major, int ver_minor)
 }
 //==============================================================================
 extern "C"
-int EXTIO_API ExtIoGetSrates( int srate_idx, double * samplerate )
+int EXTIO_API ExtIoGetSrates(int srate_idx, double * samplerate)
 {
-    if (srate_idx < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
+    if (srate_idx < (gSampleRatesCount))
     {
-        *samplerate = gSampleRates[srate_idx].value;
+        *samplerate = gSampleRates[srate_idx];
         return 0;
     }
     return 1;	// ERROR
@@ -785,10 +926,18 @@ int  EXTIO_API ExtIoGetActualSrateIdx(void)
 extern "C"
 int  EXTIO_API ExtIoSetSrate( int srate_idx )
 {
-    if (srate_idx >= 0 && srate_idx < (sizeof(gSampleRates) / sizeof(gSampleRates[0])))
+    if (srate_idx >= 0 && srate_idx < (gSampleRatesCount))
     {
         giSrateIdx = srate_idx;
-        int r = fobos_rx_set_samplerate(gDev, gSampleRates[srate_idx].value, 0);
+        int r = 0;
+        if (fobos_dev)
+        {
+            r = fobos_rx_set_samplerate(fobos_dev, gSampleRates[srate_idx], 0);
+        }
+        if (fobos_sdr_dev)
+        {
+            r = fobos_sdr_set_samplerate(fobos_sdr_dev, gSampleRates[srate_idx]);
+        }
         if (r == 0)
         {
             pfnCallback(-1, extHw_Changed_SampleRate, 0.0F, 0);// Signal application
@@ -861,7 +1010,10 @@ void EXTIO_API ExtIoSetSetting(int idx, const char * value)
         case 1:
         tempInt = atoi(value);
         if (tempInt <= 0) tempInt = 0;
-        if (tempInt > (sizeof(gSampleRates) / sizeof(gSampleRates[0]) - 1)) tempInt = sizeof(gSampleRates) / sizeof(gSampleRates[0]) - 1;
+        if (gSampleRatesCount > 0)
+        {
+            if (tempInt > (gSampleRatesCount - 1)) tempInt = gSampleRatesCount - 1;
+        }
         giSrateIdx = tempInt;
         break;
 
@@ -886,14 +1038,12 @@ void EXTIO_API ExtIoSetSetting(int idx, const char * value)
 
         case 5:
         tempInt = atoi(value);
-        if (tempInt >= 0 && tempInt <= 15)
+        if (tempInt >= 0 && tempInt <= 31)
             giVgaGain = tempInt;
         break;
 
         case 6:
         tempDouble = atof(value);
-        if (tempDouble >= LO_MIN && tempDouble <= LO_MAX)
-            gdLOfreq = tempDouble;
         break;
     }
 }

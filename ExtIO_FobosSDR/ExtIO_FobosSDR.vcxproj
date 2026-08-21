@@ -115,6 +115,7 @@
   <ItemGroup>
     <ClInclude Include="fobos.h" />
     <ClInclude Include="ExtIO_FobosSDR.h" />
+    <ClInclude Include="fobos_sdr.h" />
     <ClInclude Include="LC_ExtIO_Types.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
